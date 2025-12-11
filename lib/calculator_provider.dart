@@ -57,13 +57,6 @@ class CalculatorProvider extends ChangeNotifier implements CalculatorModel {
   }
 
   @override
-  void clearAll() {
-    clearEntry();
-    _history.clear();
-    notifyListeners();
-  }
-
-  @override
   void evaluate() {
     if (_expression.isEmpty) return;
 
@@ -97,3 +90,4 @@ class CalculatorProvider extends ChangeNotifier implements CalculatorModel {
     _displayValue = exp;
   }
 }
+
