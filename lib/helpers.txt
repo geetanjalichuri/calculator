@@ -1,0 +1,196 @@
+Dart/Flutter Decorators (Annotations)
+-------------------------------------
+Use these to convey intent and keep code clean:
+import 'package:flutter/foundation.dart'; // @immutable, @visibleForTesting
+import 'package:meta/meta.dart';          // @sealed, @internalShow more lines
+
+@immutable â€“ for data classes (e.g., history entries).
+@sealed â€“ for abstract contracts that shouldnâ€™t be extended outside your lib.
+@visibleForTesting â€“ expose helpers for tests only.
+@internal â€“ mark APIs meant for internal use.
+@protected â€“ methods intended for subclasses only.
+
+Abstract Interface (minimal)
+----------------------------
+@sealed
+abstract class CalculatorEngine {
+  String get expression;
+  String get lastResult;
+  List<HistoryEntry> get history;
+
+  void inputDigit(String d);
+  void inputDecimal();
+  void inputOperator(String op);
+  void openParen();
+  void closeParen();
+
+  void backspace();
+  void clearEntry();  // CE
+  void allClear();    // AC
+
+  void evaluate();
+  void restoreFromHistory(HistoryEntry entry);
+
+  @visibleForTesting
+  String evaluateExpression(String expression);
+}
+
+@immutable
+class HistoryEntry {
+  final String expression;
+  final String result;
+  final DateTime createdAt;
+  const HistoryEntry({required this.expression, required this.result, required this.createdAt});
+}
+
+Helper Methods (short, abstract-level)
+--------------------------------------
+// -------- Expression helpers --------
+String normalizeOps(String exp) {
+  return exp.replaceAll('Ã—', '*').replaceAll('Ã·', '/');
+}
+
+bool isDigit(String ch) => RegExp(r'^\d$').hasMatch(ch);
+bool isNumber(String s) => num.tryParse(s) != null;
+bool isOperator(String ch) => '+-*/%'.contains(ch);
+
+List<String> tokenize(String exp) {
+  final out = <String>[];
+  final buf = StringBuffer();
+  for (final ch in exp.split('')) {
+    if ('0123456789.'.contains(ch)) {
+      buf.write(ch);
+    } else if (isOperator(ch) || ch == '(' || ch == ')') {
+      if (buf.isNotEmpty) { out.add(buf.toString()); buf.clear(); }
+      out.add(ch);
+    } else if (ch.trim().isEmpty) {
+      if (buf.isNotEmpty) { out.add(buf.toString()); buf.clear(); }
+    } else {
+      throw FormatException('Invalid char: $ch');
+    }
+  }
+  if (buf.isNotEmpty) out.add(buf.toString());
+  return out;
+}
+
+int precedence(String op) => (op == '+' || op == '-') ? 1 : (op == '*' || op == '/' || op == '%') ? 2 : 0;
+bool leftAssoc(String op) => true;
+
+// Shunting-yard: tokens -> RPN
+List<String> toRpn(List<String> tokens) {
+  final out = <String>[];
+  final stack = <String>[];
+  for (final t in tokens) {
+    if (isNumber(t)) {
+      out.add(t);
+    } else if (isOperator(t)) {
+      while (stack.isNotEmpty) {
+        final top = stack.last;
+        if (isOperator(top) &&
+            (precedence(top) > precedence(t) ||
+             (precedence(top) == precedence(t) && leftAssoc(t)))) {
+          out.add(stack.removeLast());
+        } else break;
+      }
+      stack.add(t);
+    } else if (t == '(') {
+      stack.add(t);
+    } else if (t == ')') {
+      while (stack.isNotEmpty && stack.last != '(') {
+        out.add(stack.removeLast());
+      }
+      if (stack.isEmpty) throw const FormatException('Mismatched parentheses');
+      stack.removeLast();
+    }
+  }
+  while (stack.isNotEmpty) {
+    final x = stack.removeLast();
+    if (x == '(') throw const FormatException('Mismatched parentheses');
+    out.add(x);
+  }
+  return out;
+}
+
+// Evaluate RPN
+num evalRpn(List<String> rpn, {bool moduloAsPercentage = false}) {
+  final st = <num>[];
+  for (final t in rpn) {
+    if (isNumber(t)) {
+      st.add(num.parse(t));
+    } else {
+      final b = st.removeLast();
+      final a = st.removeLast();
+      switch (t) {
+        case '+': st.add(a + b); break;
+        case '-': st.add(a - b); break;
+        case '*': st.add(a * b); break;
+        case '/': if (b == 0) throw IntegerDivisionByZeroException(); st.add(a / b); break;
+        case '%':
+          st.add(moduloAsPercentage ? (a * b / 100) : (a % b));
+          break;
+      }
+    }
+  }
+  return st.single;
+}
+
+// Public evaluator
+String evaluateExpressionSafe(String exp, {bool moduloAsPercentage = false}) {
+  final tokens = tokenize(normalizeOps(exp));
+  final rpn = toRpn(tokens);
+  final value = evalRpn(rpn, moduloAsPercentage: moduloAsPercentage);
+  // Trim trailing .0 for cleaner display
+  final s = value.toString();
+  return s.endsWith('.0') ? s.substring(0, s.length - 2) : s;
+}
+
+// -------- Input buffer helpers --------
+String appendToken(String buffer, String token) => '$buffer$token';
+
+String removeLastChar(String buffer) =>
+    buffer.isEmpty ? buffer : buffer.substring(0, buffer.length - 1);
+
+// Prevent two operators in a row
+String safeAppendOperator(String buffer, String op) {
+  if (buffer.isEmpty) return op == '-' ? '-' : buffer; // allow leading minus
+  final last = buffer[buffer.length - 1];
+  if (isOperator(last)) return buffer.replaceRange(buffer.length - 1, buffer.length, op);
+  return buffer + op;
+}
+
+// -------- UI sizing helpers --------
+Size clampPanelSize({required bool isPortrait}) {
+  final maxW = isPortrait ? 420.0 : 680.0;
+  final maxH = isPortrait ? 680.0 : 420.0;
+  return Size(maxW, maxH);
+}
+
+Provider Implementation Tips (abstract, not full code)
+------------------------------------------------------
+Keep _expression, _lastResult, _history as private fields.
+Wrap all mutations with notifyListeners().
+Use safeAppendOperator, appendToken, removeLastChar for input operations.
+In evaluate(), call evaluateExpressionSafe() and push a HistoryEntry.
+
+Minimal Button Wiring Idea
+--------------------------
+void onTapLabel(CalculatorEngine e, String label) {
+  switch (label) {
+    case 'AC': e.allClear(); break;
+    case 'CE': e.clearEntry(); break;
+    case 'âŒ«': e.backspace(); break;
+    case '=':  e.evaluate(); break;
+    case '(':  e.openParen(); break;
+    case ')':  e.closeParen(); break;
+    case '+': case '-': case 'Ã—': case 'Ã·': case '%':
+      e.inputOperator(label); break;
+    case '.':  e.inputDecimal(); break;
+    default:   e.inputDigit(label); // 0â€“9
+  }
+}
+
+Keep it simple
+--------------
+Pick one behavior for % (modulo or percentage).
+Use the helpers above to stay within time.
+Apply decorators on the interface and data class (@sealed, @immutable, @visibleForTesting).
